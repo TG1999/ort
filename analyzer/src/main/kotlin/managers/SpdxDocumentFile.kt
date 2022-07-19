@@ -83,6 +83,9 @@ private val SPDX_VCS_PREFIXES = mapOf(
     "svn+" to VcsType.SUBVERSION
 )
 
+/** Regular expression to extract the scope parameter from a purl. */
+private val REG_SCOPE = Regex("""pkg:.*[?&]scope=([^&]+).*""")
+
 /**
  * Return true if the [SpdxDocument] describes a project. Otherwise, if it describes a package, return false.
  */
@@ -99,6 +102,16 @@ internal fun SpdxDocument.projectPackage(): SpdxPackage? =
         // The package that describes a project must have an "empty" package filename (as the "filename" is the project
         // directory itself).
         ?.singleOrNull { it.packageFilename.isEmpty() || it.packageFilename == "." }
+
+/**
+ * Try to find an [SpdxExternalReference] in this [SpdxPackage] of type purl from which the scope of a
+ * package manager dependency can be extracted. Return this scope or *null* if cannot be determined.
+ */
+internal fun SpdxPackage.extractScopeFromExternalReferences(): String? =
+    externalRefs.filter { it.referenceType == SpdxExternalReference.Type.Purl }
+        .mapNotNull { REG_SCOPE.matchEntire(it.referenceLocator) }
+        .map { it.groupValues[1] }
+        .firstOrNull()
 
 /**
  * Return the concluded license to be used in ORT's data model, which expects a not present value to be null instead
@@ -332,16 +345,15 @@ class SpdxDocumentFile(
             }
         }
 
-    private fun getPackageManagerDependency(pkgId: String, doc: SpdxResolvedDocument): PackageReference? {
+    internal fun getPackageManagerDependency(pkgId: String, doc: SpdxResolvedDocument): PackageReference? {
         val spdxPackage = doc.getSpdxPackageForId(pkgId, mutableListOf()) ?: return null
         val definitionFile = doc.getDefinitionFile(pkgId) ?: return null
 
         if (spdxPackage.packageFilename.isBlank()) return null
-        if (spdxPackage.packageFilename.count { it == '?' } != 1) return null
 
-        val packageFilename = spdxPackage.packageFilename.substringBefore("?")
-        val scope = spdxPackage.packageFilename.substringAfter("?").substringAfter("=")
-        val packageFile = definitionFile.parentFile.resolve(packageFilename)
+        val scope = spdxPackage.extractScopeFromExternalReferences() ?: return null
+
+        val packageFile = definitionFile.parentFile.resolve(spdxPackage.packageFilename)
 
         if (packageFile.isFile) {
             val managedFiles = findManagedFiles(packageFile.parentFile, ALL)
